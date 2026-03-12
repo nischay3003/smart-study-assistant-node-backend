@@ -17,7 +17,10 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 app.get("/", async(req, res) => {
-  try{const response = await axios.get(process.env.AI_SERVICE_URL + "/health");
+  try{
+    console.log("Performing health check to AI Service...", process.env.AI_SERVICE_URL+"/health");
+
+  const response = await axios.get(process.env.AI_SERVICE_URL + "/health");
   console.log("AI Service Health Check:", response.data);
   res.send(response.data);}
   catch(err){
