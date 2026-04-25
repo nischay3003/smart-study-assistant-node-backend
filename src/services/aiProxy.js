@@ -1,6 +1,6 @@
 const axios = require("axios");
 
-const askAI = async (question, chatHistory = [],sessionId) => {
+const askAI = async (question, chatHistory = [],chatId) => {
   try{
     const res = await axios.post(
       process.env.AI_SERVICE_URL + "/ask",
@@ -10,9 +10,9 @@ const askAI = async (question, chatHistory = [],sessionId) => {
         
       },{
         headers: {
-          "x-session-id": sessionId
+          "x-chat-id": chatId
         },
-        timeout:30000
+        
       },
       
       
@@ -39,6 +39,19 @@ const generateQuizAI = async (topic, difficulty = "easy") => {
   return res.data;
 };
 
-module.exports = { askAI, generateQuizAI };
+const ingestPdf=async(formData, fileName, chatId)=>{
 
+    const response = await axios.post(process.env.AI_SERVICE_URL + "/doc/ingest/pdf", formData, {
+      headers: {
+        ...formData.getHeaders(),
+        "x-chat-id": chatId
 
+      },
+    });
+  
+
+    return response;
+  
+};
+
+module.exports = { askAI, generateQuizAI ,ingestPdf};
