@@ -40,7 +40,7 @@ app.use("/api",verifyToken)
 
 app.use("/api/quiz",quizRoutes);
 app.use("/api/chat",chatRoutes);
-app.use("/api/doc",docRoutes);
+app.use("/api/document",docRoutes);
 app.use("/api/ask",askRoutes);
 app.use("/auth",authRoutes);
 app.use("/api/user",userRoutes);

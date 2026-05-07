@@ -1,13 +1,14 @@
 import express from "express";
 const router=express.Router();
-import { ingestPdf } from "../services/aiProxy.js";
+import { ingestFile } from "../services/aiProxy.js";
 import multer from "multer";
 import FormData from "form-data";
 import axios from "axios"
 import ChatCollection from "../models/ChatCollection.js";
+import { v4 as uuidv4 } from 'uuid';
 const storage=multer.memoryStorage();
 const upload=multer({dest:"uploads/",storage});
-router.post("/ingest/pdf",upload.single("file"), async (req, res) => {
+router.post("/ingest",upload.single("file"), async (req, res) => {
   const file = req.file;
   console.log("Received file for ingestion:", file ? file.originalname : "No file");
 
@@ -18,6 +19,8 @@ router.post("/ingest/pdf",upload.single("file"), async (req, res) => {
     return res.status(400).json({ error: "PDF file is required" });
   }
 
+  // Generate unique doc_id
+  const docId = uuidv4();
 
   try {
     const formData = new FormData();
@@ -33,7 +36,7 @@ router.post("/ingest/pdf",upload.single("file"), async (req, res) => {
 
     //   },
     // });
-    const response=await ingestPdf(formData, file.originalname, chatId);
+    const response=await ingestFile(formData, file.originalname, chatId, docId);
 
     if (response.status==200){
         await ChatCollection.updateOne(
@@ -42,6 +45,7 @@ router.post("/ingest/pdf",upload.single("file"), async (req, res) => {
             $push: {
             documents: {
                 name: file.originalname,
+                doc_id: docId,
                 fileHash:response.data.file_hash
             }
             }
@@ -55,57 +59,60 @@ router.post("/ingest/pdf",upload.single("file"), async (req, res) => {
     res.status(500).json({ error: "Failed to ingest PDF" });
   }
 });
-router.delete("/:fileHash", async (req, res) => {
+router.delete("/delete", async (req, res) => {
   console.log("Entered delete")
   try {
-    const { fileHash } = req.params;
-    const chatId = req.headers["x-chat-id"]; // or from body/query
+    const { doc_id } = req.body;
+    const chatId = req.headers["x-chat-id"];
+    console.log("Doc _id:",doc_id," Chat_id",chatId)
 
-    if (!chatId || !fileHash) {
-      return res.status(400).json({ message: "Missing chatId or fileHash" });
+    if (!chatId || !doc_id) {
+      return res.status(400).json({ message: "Missing chatId or docId" });
     }
 
-    console.log("Deleting doc:", fileHash, "from chat:", chatId);
+    console.log("Deleting doc:", doc_id, "from chat:", chatId);
 
-    // 🔹 1. Remove from MongoDB
-    const result = await ChatCollection.updateOne(
-      { chatId },
-      {
-        $pull: {
-          documents: { fileHash: fileHash }
-        }
-      }
-    );
+    // 🔹 1. Find and remove from MongoDB
+    const chat = await ChatCollection.findOne({ chatId });
+    if (!chat) {
+      return res.status(404).json({ message: "Chat not found" });
+    }
 
-    console.log("Mongo update result:", result);
+    const docIndex = chat.documents.findIndex(doc => doc.doc_id === doc_id);
+    console.log("Document index in chat:", docIndex);
+    if (docIndex === -1) {
+      return res.status(404).json({ message: "Document not found in chat" });
+    }
+
+    chat.documents.splice(docIndex, 1);
+    
 
     // 🔹 2. Call Python AI service to delete embeddings
     const aiRes = await axios.delete(
       `${process.env.AI_SERVICE_URL}/doc/delete`,
       {
-        method: "DELETE",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        params:{
-          file_hash: fileHash,
+        params: {
+          doc_id: doc_id,
           chat_id: chatId
         }
       }
     );
+    if (aiRes.status == 200) {
+      await chat.save();
+    }
 
-    const aiData = await aiRes.json();
 
     return res.json({
       message: "Document deleted successfully",
-      aiResponse: aiData
+      aiResponse: aiRes.data
     });
 
   } catch (err) {
-    console.error("Error deleting document:", err);
-    res.status(500).json({ message: "Failed to delete document" });
+    console.error("Document deletion error:", err);
+    res.status(500).json({ error: "Failed to delete document" });
   }
 });
+      
 
 export default router;
 

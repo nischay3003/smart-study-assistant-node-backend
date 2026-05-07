@@ -1,5 +1,6 @@
 
 import mongoose from "mongoose";
+console.log("Updated 2 Model Schema......")
 
 const messageSchema = new mongoose.Schema({
   role: {
@@ -39,6 +40,7 @@ const chatSchema = new mongoose.Schema({
     type: [
         {
         name: String,
+        doc_id: { type: String, required: true },
         uploadedAt: {
             type: Date,
             default: Date.now
@@ -62,9 +64,11 @@ const chatSchema = new mongoose.Schema({
 });
 
 // auto update updatedAt
-chatSchema.pre("save", function (next) {
+chatSchema.pre("save", async function () {
   this.updatedAt = Date.now();
-  next();
+  
 });
+
+
 
 export default mongoose.model("Chat", chatSchema);

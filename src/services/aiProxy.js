@@ -39,12 +39,13 @@ const generateQuizAI = async (topic, difficulty = "easy") => {
   return res.data;
 };
 
-const ingestPdf=async(formData, fileName, chatId)=>{
+const ingestFile=async(formData, fileName, chatId, docId)=>{
 
-    const response = await axios.post(process.env.AI_SERVICE_URL + "/doc/ingest/pdf", formData, {
+    const response = await axios.post(process.env.AI_SERVICE_URL + "/doc/ingest", formData, {
       headers: {
         ...formData.getHeaders(),
-        "x-chat-id": chatId
+        "x-chat-id": chatId,
+        "x-doc-id": docId
 
       },
     });
@@ -54,4 +55,4 @@ const ingestPdf=async(formData, fileName, chatId)=>{
   
 };
 
-module.exports = { askAI, generateQuizAI ,ingestPdf};
+module.exports = { askAI, generateQuizAI ,ingestFile};
