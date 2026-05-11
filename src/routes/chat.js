@@ -4,6 +4,7 @@ const router=express.Router();
 
 
 import Chat from "../models/ChatCollection.js   ";
+import Document from "../models/Document.js";
 
 router.get("/title",async(req,res)=>{
     try{
@@ -45,9 +46,10 @@ router.get("/history/:chatId",async(req,res)=>{
         messages:[]
       })
     }
+    const documents = await Document.find({ chatId }).sort({ uploadedAt: -1 });
     res.json({
     messages: chatHistory.messages,
-    documents: chatHistory.documents // ✅ add this
+    documents
     });
   }
   catch(err){
@@ -91,7 +93,7 @@ router.get("/", async (req, res) => {
 
   const chats = await Chat.find({ userId })
     .sort({ updatedAt: -1 })
-    .select("chatId title updatedAt documents");
+    .select("chatId title updatedAt");
 
   res.json(chats);
 });

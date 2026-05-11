@@ -1,4 +1,4 @@
-// import express from "express";
+import express from "express";
 import FormData from "form-data";
 import axios from "axios";
 import mongoose from "mongoose";
@@ -6,7 +6,8 @@ import { v4 as uuidv4 } from "uuid";
 
 import { ingestFile } from "../services/aiProxy.js";
 import ChatCollection from "../models/ChatCollection.js";
-import upload from "../middleware/upload.js";
+import Document from "../models/Document.js";
+import upload from "../config/gridfs.js";
 
 // BUG FIX #12: removed unused `multer` import (upload comes from middleware/upload.js)
 
@@ -115,28 +116,22 @@ router.post("/ingest/global", upload.single("file"), async (req, res) => {
     console.log("AI service response:", response.data);
 
     // Persist metadata to MongoDB
-    await ChatCollection.updateOne(
-      { chatId: "global" },
-      {
-        $push: {
-          documents: {
-            title:          title || file?.originalname || "Untitled",
-            filename:       file?.originalname || null,
-            doc_id:         docId,
-            gridfs_file_id: gridfsFileId,
-            mimeType:       file?.mimetype || "text/plain",
-            size:           file?.size || rawText?.length || 0,
-            category:       category || "General",
-            description:    description || "",
-            type:           file ? "file" : "text",
-            source:         "global",
-            fileHash:       response.data?.file_hash || null,
-            uploadedAt:     new Date(),
-          },
-        },
-      },
-      { upsert: true }
-    );
+    
+    await Document.create({
+      chatId: "global",
+      doc_id: docId,
+      gridfs_file_id: gridfsFileId,
+      title: title || file?.originalname || "Untitled",
+      filename: file?.originalname || null,
+      fileHash: response.data?.file_hash || null,
+      mimeType: file?.mimetype || "text/plain",
+      content: rawText || null,
+      size: file?.size || rawText?.length || 0,
+      category: category || "General",
+      description: description || "",
+      type: file ? "file" : "text",
+      source: "global",
+    });
 
     return res.json(response.data);
 
@@ -162,51 +157,155 @@ router.post("/ingest/global", upload.single("file"), async (req, res) => {
 // GET /view/:fileId  — stream file inline (e.g. PDF preview in browser)
 // ---------------------------------------------------------------------------
 router.get("/view/:fileId", async (req, res) => {
+  console.log("=== VIEW ROUTE STARTED ===");
+  console.log("FileId param:", req.params.fileId);
+  
   try {
-    const bucket = getGridFSBucket();
-    const fileId = new mongoose.Types.ObjectId(req.params.fileId);
-
-    // BUG FIX #1 + #2: removed the duplicate filesCollection/fileDoc block.
-    // One clean block sets both Content-Type and Content-Disposition.
-    const filesCollection = mongoose.connection.db.collection("documents.files");
-    const fileDoc = await filesCollection.findOne({ _id: fileId });
-
-    if (!fileDoc) {
-      return res.status(404).json({ error: "File not found" });
+    // Step 1: Validate fileId format
+    let fileId;
+    try {
+      fileId = new mongoose.Types.ObjectId(req.params.fileId);
+      console.log("✅ Valid ObjectId:", fileId);
+    } catch (err) {
+      console.error("❌ Invalid ObjectId format:", req.params.fileId);
+      return res.status(400).json({ error: "Invalid file ID format" });
     }
 
-    res.set({
-      "Content-Type":        fileDoc.contentType || "application/octet-stream",
-      "Content-Disposition": `inline; filename="${fileDoc.filename}"`,
+    // Step 2: Get GridFS bucket
+    const bucket = getGridFSBucket();
+    console.log("✅ GridFS bucket created");
+
+    // Step 3: Find file metadata
+    const filesCollection = mongoose.connection.db.collection("documents.files");
+    console.log("📁 Searching for file in documents.files collection...");
+
+    const detailedFileCollection=mongoose.connection.db.collection("documents")
+    const detailedFileDoc=await detailedFileCollection.findOne({"gridfs_file_id":fileId});
+    
+    const fileDoc = await filesCollection.findOne({ _id: fileId });
+    console.log("File metadata result:", fileDoc);
+
+    if (!fileDoc) {
+      console.log("❌ File not found in database for ID:", fileId);
+      return res.status(404).json({ error: "File not found" });
+    }
+    if(detailedFileDoc.type==="text"){
+      if (doc.type === "text") {
+
+        return res.json({
+
+          type: "text",
+
+          title: doc.title,
+
+          content: doc.content
+        });
+      }
+    }
+    console.log("✅ File found:", {
+      filename: fileDoc.filename,
+      contentType: detailedFileDoc.mimeType,
+      size: fileDoc.length,
+      uploadDate: fileDoc.uploadDate
     });
 
+    // Step 4: Set response headers
+    console.log("file:",fileDoc);
+     const mimeType = detailedFileDoc.mimeType || "application/octet-stream";
+    const canPreview = [
+      'application/pdf',
+      'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+      'text/plain', 'text/html', 'text/markdown'
+    ].includes(mimeType);
+    
+    // Set disposition based on preview capability
+    const disposition = canPreview ? 'inline' : 'attachment';
+    
+    res.set({
+      "Content-Type": mimeType,
+      "Content-Disposition": `${disposition}; filename="${encodeURIComponent(fileDoc.filename)}"`,
+      "Access-Control-Expose-Headers": "Content-Disposition"
+    });
+    
+    console.log("✅ Response headers set:", {
+      "Content-Type": mimeType,
+      "Content-Disposition": `${disposition}; filename="${encodeURIComponent(fileDoc.filename)}"`
+    });
+
+    // Step 5: Open download stream
+    console.log("📡 Opening download stream for fileId:", fileId);
     const downloadStream = bucket.openDownloadStream(fileId);
 
-    // BUG FIX #3: error handler added — prevents unhandled stream errors
-    // crashing the server when fileId exists in metadata but not in GridFS.
+    // Step 6: Track stream events
+    let streamError = false;
+    let bytesSent = 0;
+
+    downloadStream.on("data", (chunk) => {
+      bytesSent += chunk.length;
+      console.log(`📦 Stream data chunk: ${chunk.length} bytes (Total: ${bytesSent} bytes)`);
+    });
+
     downloadStream.on("error", (err) => {
-      console.error("View stream error:", err.message);
-      // Only send error response if headers haven't been sent yet
+      console.error("❌ Stream error event:", err);
+      console.error("Error message:", err.message);
+      console.error("Error stack:", err.stack);
+      streamError = true;
+      
       if (!res.headersSent) {
-        res.status(404).json({ error: "File stream failed" });
+        res.status(404).json({ error: "File stream failed: " + err.message });
+      } else {
+        console.log("Headers already sent, can't send error response");
+        res.end();
       }
     });
 
+    downloadStream.on("end", () => {
+      console.log(`✅ Stream ended successfully. Total bytes sent: ${bytesSent}`);
+    });
+
+    downloadStream.on("close", () => {
+      console.log("🔒 Stream closed");
+    });
+
+    // Step 7: Pipe to response
+    console.log("🚀 Piping stream to response...");
     downloadStream.pipe(res);
 
+    // Step 8: Track response finish
+    res.on("finish", () => {
+      console.log("✅ Response finished sending");
+      if (!streamError) {
+        console.log("🎉 File sent successfully!");
+      }
+    });
+
+    res.on("error", (err) => {
+      console.error("❌ Response error:", err);
+    });
+
   } catch (err) {
-    console.error("View error:", err);
+    console.error("❌ Route error:", err);
+    console.error("Error stack:", err.stack);
+    
     if (!res.headersSent) {
-      return res.status(500).json({ error: "View failed" });
+      return res.status(500).json({ 
+        error: "View failed", 
+        details: err.message,
+        stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+      });
+    } else {
+      console.log("Headers already sent, ending response");
+      res.end();
     }
   }
 });
-
 // ---------------------------------------------------------------------------
 // GET /download/:fileId  — force-download a file
 // ---------------------------------------------------------------------------
 router.get("/download/:fileId", async (req, res) => {
+  console.log("Entered download route with fileId:", req.params.fileId);
   try {
+
     const bucket = getGridFSBucket();
     const fileId = new mongoose.Types.ObjectId(req.params.fileId);
 
@@ -275,28 +374,22 @@ router.post("/ingest", upload.single("file"), async (req, res) => {
     const response = await ingestFile(formData, file.originalname, chatId, docId);
 
     // BUG FIX #8: only write MongoDB metadata if AI service succeeded.
-    // If updateOne() throws here, it's a DB error — we do NOT delete the
+    // If create() throws here, it's a DB error — we do NOT delete the
     // GridFS file (the file is fine; only the metadata write failed).
     if (response?.status === 200) {
-      await ChatCollection.updateOne(
-        { chatId },
-        {
-          $push: {
-            documents: {
-              title:          file.originalname,
-              filename:       file.originalname,
-              doc_id:         docId,
-              gridfs_file_id: gridfsFileId,
-              mimeType:       file.mimetype,
-              size:           file.size,
-              fileHash:       response.data.file_hash,
-              type:           "file",
-              source:         "personal",
-              uploadedAt:     new Date(),
-            },
-          },
-        }
-      );
+      await Document.create({
+        chatId,
+        userId: req.user?.userId, // assuming user is set
+        doc_id: docId,
+        gridfs_file_id: gridfsFileId,
+        title: file.originalname,
+        filename: file.originalname,
+        fileHash: response.data.file_hash,
+        mimeType: file.mimetype,
+        size: file.size,
+        type: "file",
+        source: "personal",
+      });
     }
 
     return res.json(response.data);
@@ -328,15 +421,9 @@ router.delete("/delete", async (req, res) => {
       return res.status(400).json({ message: "Missing chatId or docId" });
     }
 
-    const chat = await ChatCollection.findOne({ chatId });
-    if (!chat) {
-      return res.status(404).json({ message: "Chat not found" });
-    }
-
-    const docIndex = chat.documents.findIndex((doc) => doc.doc_id === doc_id);
-    console.log("Document index in chat:", docIndex);
-    if (docIndex === -1) {
-      return res.status(404).json({ message: "Document not found in chat" });
+    const doc = await Document.findOne({ doc_id, chatId });
+    if (!doc) {
+      return res.status(404).json({ message: "Document not found" });
     }
 
     // Call AI service to delete embeddings
@@ -346,24 +433,20 @@ router.delete("/delete", async (req, res) => {
 
     // BUG FIX #10: strict equality check
     if (aiRes.status === 200) {
-      const doc = chat.documents[docIndex];
-
-      // BUG FIX #9: wrapped GridFS delete in try/catch so a GridFS failure
-      // does NOT prevent the MongoDB metadata from being cleaned up.
-      // Embeddings are already deleted — we must remove the metadata regardless.
+      // Delete from GridFS if exists
       if (doc.gridfs_file_id) {
         await safeDeleteGridFSFile(doc.gridfs_file_id);
       }
+      // Delete document metadata
+      await Document.findOneAndDelete({ doc_id, chatId });
 
-      // Always remove metadata even if GridFS delete failed
-      chat.documents.splice(docIndex, 1);
-      await chat.save();
+      return res.json({
+        message: "Document deleted successfully",
+        aiResponse: aiRes.data,
+      });
+    } else {
+      return res.status(500).json({ message: "Failed to delete from AI service" });
     }
-
-    return res.json({
-      message: "Document deleted successfully",
-      aiResponse: aiRes.data,
-    });
 
   } catch (err) {
     console.error("Document deletion error:", err);
@@ -374,13 +457,14 @@ router.delete("/delete", async (req, res) => {
 // ---------------------------------------------------------------------------
 // GET /documents/:chatId  — list all documents for a chat session
 // ---------------------------------------------------------------------------
-router.get("/documents/:chatId", async (req, res) => {
+
+router.get("/chat/:chatId", async (req, res) => {
   try {
     const { chatId } = req.params;
 
-    const chat = await ChatCollection.findOne({ chatId }).select("documents");
+    const documents = await Document.find({ chatId }).sort({ uploadedAt: -1 });
 
-    return res.json({ documents: chat?.documents || [] });
+    return res.json({ documents });
 
   } catch (err) {
     console.error("Get documents error:", err);
@@ -393,9 +477,9 @@ router.get("/documents/:chatId", async (req, res) => {
 // ---------------------------------------------------------------------------
 router.get("/global", async (req, res) => {
   try {
-    const globalChat = await ChatCollection.findOne({ chatId: "global" }).select("documents");
+    const documents = await Document.find({ chatId: "global" }).sort({ uploadedAt: -1 });
 
-    return res.json({ documents: globalChat?.documents || [] });
+    return res.json({ documents });
 
   } catch (err) {
     console.error("Global docs error:", err);
@@ -414,12 +498,7 @@ router.delete("/global/delete/:docId", async (req, res) => {
       return res.status(400).json({ error: "docId required" });
     }
 
-    const globalChat = await ChatCollection.findOne({ chatId: "global" });
-    if (!globalChat) {
-      return res.status(404).json({ error: "Global knowledge not found" });
-    }
-
-    const doc = globalChat.documents.find((d) => d.doc_id === docId);
+    const doc = await Document.findOne({ doc_id: docId, chatId: "global" });
     if (!doc) {
       return res.status(404).json({ error: "Document not found" });
     }
@@ -436,10 +515,7 @@ router.delete("/global/delete/:docId", async (req, res) => {
     }
 
     // Always remove metadata regardless of GridFS outcome
-    await ChatCollection.updateOne(
-      { chatId: "global" },
-      { $pull: { documents: { doc_id: docId } } }
-    );
+    await Document.findOneAndDelete({ doc_id: docId, chatId: "global" });
 
     return res.json({
       status:      "success",

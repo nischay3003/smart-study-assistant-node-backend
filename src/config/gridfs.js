@@ -1,21 +1,14 @@
+import multer from "multer";
 import mongoose from "mongoose";
-import { GridFsStorage } from "multer-gridfs-storage";
 
-const storage = new GridFsStorage({
+// Use memory storage for multer
+const storage = multer.memoryStorage();
 
-  url: process.env.MONGO_URI,
-
-  file: (req, file) => {
-
-    return {
-
-      filename:
-        `${Date.now()}-${file.originalname}`,
-
-      bucketName: "documents"
-
-    };
+const upload = multer({ 
+  storage,
+  limits: {
+    fileSize: 10 * 1024 * 1024 // 10MB limit - adjust as needed
   }
 });
 
-export default storage;
+export default upload;
